@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Nourish</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f0f0f;color:#f0f0f0;font-family:'Plus Jakarta Sans',sans-serif}
+:root{--lime:#C8F04A;--card:#1a1a1a;--card2:#222;--ink3:#2a2a2a;--border:rgba(255,255,255,0.08);--muted:#666;--muted2:#888;--red:#FF5252}
+input,button{font-family:inherit;box-sizing:border-box}
+input{background:#2a2a2a;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;font-size:13px;color:#f0f0f0;width:100%}
+input:focus,button:focus{outline:2px solid #C8F04A;outline-offset:2px}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.fu{animation:fadeUp 0.3s ease both}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,0.9);display:flex;align-items:flex-end;justify-content:center;z-index:200}
+.sheet{background:#1a1a1a;border-radius:24px 24px 0 0;width:100%;max-width:480px;padding:24px 20px 44px;animation:fadeUp 0.25s ease}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script>
+var h = React.createElement;
+var useState = React.useState;
+var useRef = React.useRef;
+
+var LIME='#C8F04A',INK='#0f0f0f',CARD='#1a1a1a',CARD2='#222',INK3='#2a2a2a';
+var BORDER='rgba(255,255,255,0.08)',MUTED='#666',MUTED2='#888',RED='#FF5252';
+var MODEL = 'claude-sonnet-4-6';
+var SK = 'nourish_v5';
+var DEF_GOALS = {calories:2000,protein:150,carbs:250,fat:65};
+var MACROS = [
+  {key:'protein',label:'Protein',color:'#FF8C42',unit:'g'},
+  {key:'carbs',  label:'Carbs',  color:'#FFD166',unit:'g'},
+  {key:'fat',    label:'Fat',    color:'#9B5DE5',unit:'g'},
+  {key:'fiber',  label:'Fiber',  color:'#06D6A0',unit:'g'},
+  {key:'sugar',  label:'Sugar',  color:'#FF5252',unit:'g'},
+  {key:'sodium', label:'Sodium', color:'#118AB2',unit:'mg'},
+];
+
+function loadData(){
+  try{var r=localStorage.getItem(SK);return r?JSON.parse(r):{entries:[],weight:[],goals:DEF_GOALS,wu:'lbs'};}
+  catch(x){return{entries:[],weight:[],goals:DEF_GOALS,wu:'lbs'};}
+}
+function saveData(d){try{localStorage.setItem(SK,JSON.stringify(d));}catch(x){}}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+function fmtN(n){return Math.round(Number(n)||0);}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
+
+function buildPrompt(extra){
+  var p='Analyze this food image and estimate nutritional content.';
+  if(extra)p+=' Context: '+extra;
+  p+=' If the image is unclear or ambiguous, respond with exactly: {"unclear":true,"question":"your clarifying question"}';
+  p+=' If clear, respond with exactly this JSON and nothing else: {"name":"food name","calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0,"sodium":0}';
+  p+=' Units: all grams except sodium in mg. No markdown, no explanation, just JSON.';
+  return p;
+}
+
+// Ring component
+function Ring(props){
+  var pct=props.pct||0, color=props.color, label=props.label;
+  var val=props.val||0, goal=props.goal||1, unit=props.unit||'';
+  var sz=90, sw=8, r=(sz-sw)/2;
+  var circ=2*Math.PI*r, dash=Math.min(pct,100)/100*circ;
+  var over=pct>100, rc=over?RED:color;
+  return h('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',gap:4}},
+    h('div',{style:{position:'relative',width:sz,height:sz}},
+      h('svg',{width:sz,height:sz,style:{transform:'rotate(-90deg)',position:'absolute'}},
+        h('circle',{cx:sz/2,cy:sz/2,r:r,fill:'none',stroke:'rgba(255,255,255,0.07)',strokeWidth:sw}),
+        h('circle',{cx:sz/2,cy:sz/2,r:r,fill:'none',stroke:rc,strokeWidth:sw,
+          strokeDasharray:String(dash)+' '+String(circ),strokeLinecap:'round',
+          style:{transition:'stroke-dasharray 0.6s ease'}})
+      ),
+      h('div',{style:{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center'}},
+        h('span',{style:{fontSize:11,fontWeight:700,color:rc,fontFamily:"'Playfair Display',serif"}},fmtN(pct)+'%')
+      )
+    ),
+    h('div',{style:{textAlign:'center'}},
+      h('div',{style:{fontSize:10,fontWeight:700,color:'#f0f0f0',letterSpacing:'0.06em',textTransform:'uppercase'}},label),
+      h('div',{style:{fontSize:9,color:over?RED:MUTED2}},fmtN(val)+unit+'/'+goal+unit)
+    )
+  );
+}
+
+// Macro chip
+function Chip(props){
+  var m=props.m, val=props.val||0;
+  return h('div',{style:{background:CARD2,borderRadius:12,padding:'10px 12px',border:'1px solid rgba(255,255,255,0.05)'}},
+    h('div',{style:{fontSize:9,fontWeight:700,color:MUTED2,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}},m.label),
+    h('div',{style:{fontSize:16,fontWeight:700,color:m.color,fontFamily:"'Playfair Display',serif"}},
+      fmtN(val),h('span',{style:{fontSize:9,color:MUTED2,marginLeft:2}},m.unit)
+    )
+  );
+}
+
+// Entry card
+function EntryCard(props){
+  var entry=props.entry, onDelete=props.onDelete;
+  var os=useState(false), open=os[0], setOpen=os[1];
+  return h('div',{className:'fu',style:{background:CARD2,borderRadius:16,overflow:'hidden',border:'1px solid '+BORDER,marginBottom:10}},
+    h('div',{style:{display:'flex',alignItems:'center',gap:12,padding:'12px 14px'}},
+      entry.imageUrl
+        ? h('img',{src:entry.imageUrl,alt:'',style:{width:50,height:50,borderRadius:10,objectFit:'cover',flexShrink:0}})
+        : h('div',{style:{width:50,height:50,borderRadius:10,background:INK3,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}},'🍽️'),
+      h('div',{style:{flex:1,minWidth:0}},
+        h('div',{style:{fontWeight:600,fontSize:13,color:'#f0f0f0',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},entry.name),
+        h('div',{style:{fontSize:10,color:MUTED2,marginTop:3}},
+          'P '+fmtN(entry.protein)+'g · C '+fmtN(entry.carbs)+'g · F '+fmtN(entry.fat)+'g'
+        )
+      ),
+      h('div',{style:{textAlign:'right',flexShrink:0,marginRight:8}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:19,color:LIME,fontWeight:700}},fmtN(entry.calories)),
+        h('div',{style:{fontSize:8,color:MUTED2,textTransform:'uppercase',letterSpacing:'0.1em'}},'kcal')
+      ),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:4}},
+        h('button',{onClick:function(){setOpen(function(v){return !v;});},style:{background:'none',border:'none',cursor:'pointer',color:MUTED,fontSize:12,padding:'2px 5px'}},open?'▲':'▼'),
+        h('button',{onClick:function(){onDelete(entry.id);},style:{background:'none',border:'none',cursor:'pointer',color:MUTED,fontSize:12,padding:'2px 5px'},
+          onMouseEnter:function(ev){ev.currentTarget.style.color=RED;},onMouseLeave:function(ev){ev.currentTarget.style.color=MUTED;}},'✕')
+      )
+    ),
+    open && h('div',{style:{padding:'0 14px 14px',display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6}},
+      MACROS.map(function(m){
+        return h('div',{key:m.key,style:{background:INK3,borderRadius:8,padding:'7px 9px'}},
+          h('div',{style:{fontSize:9,color:MUTED2}},m.label),
+          h('div',{style:{fontSize:12,fontWeight:700,color:m.color,marginTop:2}},fmtN(entry[m.key]||0)+m.unit)
+        );
+      })
+    )
+  );
+}
+
+// Pill toggle
+function Pill(props){
+  var val=props.val, onChange=props.onChange, opts=props.opts;
+  return h('div',{style:{display:'flex',background:INK3,borderRadius:100,padding:3,flexShrink:0}},
+    opts.map(function(opt){
+      var on=val===opt;
+      return h('button',{key:opt,onClick:function(){if(!on)onChange(opt);},
+        style:{flex:1,padding:'6px 13px',border:'none',borderRadius:100,fontSize:12,fontWeight:700,
+          cursor:'pointer',background:on?LIME:'transparent',color:on?INK:MUTED2,transition:'all 0.2s'}},opt);
+    })
+  );
+}
+
+// ── App ──
+function App(){
+  var ds=useState(loadData), data=ds[0], setData=ds[1];
+  var ks=useState(function(){return localStorage.getItem('nourish_k5')||'';}), apiKey=ks[0], setApiKey=ks[1];
+  var sks=useState(false), showKey=sks[0], setShowKey=sks[1];
+  var ts=useState('today'), tab=ts[0], setTab=ts[1];
+  var pvs=useState(null), preview=pvs[0], setPreview=pvs[1];
+  var pds=useState(null), pending=pds[0], setPending=pds[1];
+  var bys=useState(false), busy=bys[0], setBusy=bys[1];
+  var ers=useState(null), err=ers[0], setErr=ers[1];
+  var cls=useState(false), clarify=cls[0], setClarify=cls[1];
+  var cqs=useState(''), cq=cqs[0], setCq=cqs[1];
+  var cas=useState(''), ca=cas[0], setCa=cas[1];
+  var wis=useState(''), wIn=wis[0], setWIn=wis[1];
+  var mms=useState(false), manMode=mms[0], setManMode=mms[1];
+  var mvs=useState({name:'',calories:'',protein:'',carbs:'',fat:'',fiber:'',sugar:'',sodium:''});
+  var manv=mvs[0], setManv=mvs[1];
+  var ges=useState(false), gEdit=ges[0], setGEdit=ges[1];
+  var gds=useState({calories:2000,protein:150,carbs:250,fat:65}), gDraft=gds[0], setGDraft=gds[1];
+  var fileRef=useRef(null);
+
+  function persist(n){setData(n);saveData(n);}
+  var goals=data.goals||DEF_GOALS;
+  var wu=data.wu||'lbs';
+  var today=todayStr();
+  var todayE=data.entries.filter(function(en){return en.date===today;});
+  var tot=todayE.reduce(function(a,en){
+    return{calories:a.calories+(en.calories||0),protein:a.protein+(en.protein||0),
+      carbs:a.carbs+(en.carbs||0),fat:a.fat+(en.fat||0),
+      fiber:a.fiber+(en.fiber||0),sugar:a.sugar+(en.sugar||0),sodium:a.sodium+(en.sodium||0)};
+  },{calories:0,protein:0,carbs:0,fat:0,fiber:0,sugar:0,sodium:0});
+  var latestW=data.weight&&data.weight.length?data.weight[data.weight.length-1]:null;
+  var seen={}, allDates=[];
+  data.entries.forEach(function(en){if(!seen[en.date]){seen[en.date]=1;allDates.push(en.date);}});
+  allDates.sort().reverse();allDates=allDates.slice(0,7);
+
+  function handleFile(ev){
+    var file=ev.target.files&&ev.target.files[0];
+    if(!file)return;
+    var reader=new FileReader();
+    reader.onload=function(){setPreview(reader.result);setPending(reader.result);};
+    reader.readAsDataURL(file);
+    ev.target.value='';
+  }
+
+  function runAnalysis(img,extra){
+    if(!img||!apiKey){setErr('Please add your Anthropic API key first.');return;}
+    setBusy(true);setErr(null);
+    var b64=img.split(',')[1];
+    var mt=img.split(';')[0].split(':')[1];
+    fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:MODEL,max_tokens:400,messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:mt,data:b64}},
+        {type:'text',text:buildPrompt(extra||'')}
+      ]}]})
+    })
+    .then(function(res){return res.json();})
+    .then(function(json){
+      if(json.error){setErr('API error: '+json.error.message);setBusy(false);return;}
+      var raw=(json.content&&json.content[0]&&json.content[0].text)||'';
+      // strip any markdown fences
+      var text=raw.replace(/^[^{]*/,'').replace(/[^}]*$/,'');
+      var parsed=JSON.parse(text);
+      if(parsed.unclear){setCq(parsed.question);setClarify(true);setBusy(false);return;}
+      var entry={id:uid(),date:today,imageUrl:img,name:parsed.name,
+        calories:Number(parsed.calories||0),protein:Number(parsed.protein||0),
+        carbs:Number(parsed.carbs||0),fat:Number(parsed.fat||0),
+        fiber:Number(parsed.fiber||0),sugar:Number(parsed.sugar||0),sodium:Number(parsed.sodium||0),ts:Date.now()};
+      var nd=Object.assign({},data,{entries:data.entries.concat([entry])});
+      persist(nd);
+      setPreview(null);setPending(null);setClarify(false);setCa('');
+      setBusy(false);
+    })
+    .catch(function(ex){setErr('Request failed: '+ex.message);setBusy(false);});
+  }
+
+  function addManual(){
+    if(!manv.name||!manv.calories)return;
+    var entry={id:uid(),date:today,imageUrl:null,name:manv.name,
+      calories:Number(manv.calories||0),protein:Number(manv.protein||0),
+      carbs:Number(manv.carbs||0),fat:Number(manv.fat||0),
+      fiber:Number(manv.fiber||0),sugar:Number(manv.sugar||0),sodium:Number(manv.sodium||0),ts:Date.now()};
+    persist(Object.assign({},data,{entries:data.entries.concat([entry])}));
+    setManv({name:'',calories:'',protein:'',carbs:'',fat:'',fiber:'',sugar:'',sodium:''});
+    setManMode(false);
+  }
+
+  function delEntry(id){persist(Object.assign({},data,{entries:data.entries.filter(function(en){return en.id!==id;})}));}
+
+  function logWeight(){
+    if(!wIn)return;
+    var w={date:today,value:Number(wIn),unit:wu,ts:Date.now()};
+    persist(Object.assign({},data,{weight:(data.weight||[]).concat([w])}));
+    setWIn('');
+  }
+
+  function setMF(k,v){setManv(function(m){var n=Object.assign({},m);n[k]=v;return n;});}
+  function setGF(k,v){setGDraft(function(g){var n=Object.assign({},g);n[k]=v;return n;});}
+
+  var TABS=[{id:'today',icon:'⚡',label:'Today'},{id:'history',icon:'📅',label:'History'},{id:'goals',icon:'🎯',label:'Goals'}];
+
+  return h('div',{style:{minHeight:'100vh',background:INK,maxWidth:480,margin:'0 auto'}},
+
+    // HEADER
+    h('div',{style:{background:'#111',padding:'18px 20px 0',borderBottom:'1px solid '+BORDER}},
+      h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}},
+        h('div',null,
+          h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:26,color:LIME,letterSpacing:'-0.02em',lineHeight:1}},'Nourish'),
+          h('div',{style:{fontSize:9,color:MUTED,letterSpacing:'0.14em',textTransform:'uppercase',marginTop:3}},'AI Food Intelligence')
+        ),
+        h('button',{onClick:function(){setShowKey(function(v){return !v;});},
+          style:{background:apiKey?INK3:LIME,border:'none',borderRadius:10,padding:'8px 13px',
+            color:apiKey?LIME:INK,fontSize:11,fontWeight:700,cursor:'pointer'}},
+          apiKey?'✓ Connected':'🔑 Add Key')
+      ),
+      showKey&&h('div',{style:{marginBottom:12,display:'flex',gap:8}},
+        h('input',{type:'password',placeholder:'sk-ant-api03-...',value:apiKey,
+          onChange:function(ev){setApiKey(ev.target.value);localStorage.setItem('nourish_k5',ev.target.value);}
+        }),
+        h('button',{onClick:function(){setShowKey(false);},
+          style:{background:LIME,border:'none',borderRadius:10,padding:'8px 14px',color:INK,fontWeight:700,cursor:'pointer',fontSize:12,flexShrink:0}},'Save')
+      ),
+      h('div',{style:{display:'flex'}},
+        TABS.map(function(t){
+          var active=tab===t.id;
+          return h('button',{key:t.id,onClick:function(){setTab(t.id);},
+            style:{flex:1,background:'none',border:'none',padding:'9px 0 13px',
+              color:active?LIME:MUTED,borderBottom:active?'2px solid '+LIME:'2px solid transparent',
+              fontSize:10,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.08em',
+              display:'flex',flexDirection:'column',alignItems:'center',gap:3}},
+            h('span',{style:{fontSize:15}},t.icon),h('span',null,t.label));
+        })
+      )
+    ),
+
+    // BODY
+    h('div',{style:{padding:'14px 14px 90px'}},
+
+      // TODAY
+      tab==='today'&&h('div',null,
+
+        // Hero
+        h('div',{style:{background:CARD,borderRadius:20,padding:'18px 18px 16px',marginBottom:12,border:'1px solid '+BORDER}},
+          h('div',{style:{fontSize:10,color:MUTED2,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}},'⚡ Energy Today'),
+          h('div',{style:{display:'flex',alignItems:'flex-end',gap:8,marginBottom:10}},
+            h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:48,color:LIME,lineHeight:1,fontWeight:700}},fmtN(tot.calories)),
+            h('div',{style:{fontSize:12,color:MUTED2,paddingBottom:5}},'/ '+goals.calories+' kcal')
+          ),
+          h('div',{style:{height:5,background:'rgba(255,255,255,0.06)',borderRadius:3,overflow:'hidden',marginBottom:6}},
+            h('div',{style:{height:'100%',borderRadius:3,transition:'width 0.6s ease',
+              width:Math.min(tot.calories/goals.calories*100,100)+'%',
+              background:tot.calories>goals.calories?RED:LIME}})
+          ),
+          h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:10,color:MUTED}},
+            h('span',null,todayE.length+' meal'+(todayE.length!==1?'s':'')+' logged'),
+            h('span',{style:{color:tot.calories>goals.calories?RED:LIME}},
+              tot.calories>goals.calories?fmtN(tot.calories-goals.calories)+' over':fmtN(goals.calories-tot.calories)+' remaining')
+          )
+        ),
+
+        // Rings
+        h('div',{style:{background:CARD,borderRadius:20,padding:'16px 10px',marginBottom:12,border:'1px solid '+BORDER,display:'flex',justifyContent:'space-around'}},
+          h(Ring,{pct:goals.protein?tot.protein/goals.protein*100:0,color:'#FF8C42',label:'Protein',val:tot.protein,goal:goals.protein,unit:'g'}),
+          h(Ring,{pct:goals.carbs?tot.carbs/goals.carbs*100:0,color:'#FFD166',label:'Carbs',val:tot.carbs,goal:goals.carbs,unit:'g'}),
+          h(Ring,{pct:goals.fat?tot.fat/goals.fat*100:0,color:'#9B5DE5',label:'Fat',val:tot.fat,goal:goals.fat,unit:'g'})
+        ),
+
+        // Macro chips
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:12}},
+          MACROS.map(function(m){return h(Chip,{key:m.key,m:m,val:tot[m.key]||0});})
+        ),
+
+        // Weight
+        h('div',{style:{background:CARD,borderRadius:20,padding:'14px 16px',border:'1px solid '+BORDER,marginBottom:12,display:'flex',alignItems:'center',gap:12}},
+          h('span',{style:{fontSize:24}},'⚖️'),
+          h('div',{style:{flex:1}},
+            latestW&&h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:19,color:'#f0f0f0',marginBottom:6}},
+              latestW.value,h('span',{style:{fontSize:11,color:MUTED2,marginLeft:3}},latestW.unit||wu)
+            ),
+            h('div',{style:{display:'flex',gap:7}},
+              h('input',{type:'number',placeholder:'Enter weight',value:wIn,
+                onChange:function(ev){setWIn(ev.target.value);},
+                style:{flex:1}}),
+              h('button',{onClick:logWeight,
+                style:{background:LIME,border:'none',borderRadius:8,padding:'7px 14px',color:INK,fontWeight:700,cursor:'pointer',fontSize:12,flexShrink:0,whiteSpace:'nowrap'}},'Log '+wu)
+            )
+          ),
+          h(Pill,{val:wu,onChange:function(v){persist(Object.assign({},data,{wu:v}));},opts:['lbs','kg']})
+        ),
+
+        // Buttons
+        !preview&&h('div',null,
+          h('input',{type:'file',accept:'image/*',capture:'environment',ref:fileRef,onChange:handleFile,style:{display:'none'}}),
+          h('button',{onClick:function(){if(fileRef.current)fileRef.current.click();},
+            style:{width:'100%',background:LIME,border:'none',borderRadius:18,padding:'17px',
+              color:INK,fontSize:15,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',
+              justifyContent:'center',gap:10,marginBottom:9,boxShadow:'0 4px 20px rgba(200,240,74,0.18)'}},
+            '📸  Snap a Meal'),
+          h('button',{onClick:function(){setManMode(function(v){return !v;});},
+            style:{width:'100%',background:'none',border:'1px solid '+BORDER,borderRadius:14,
+              padding:11,color:MUTED2,fontSize:12,fontWeight:600,cursor:'pointer',marginBottom:12}},
+            '✏️  Add manually')
+        ),
+
+        // Manual
+        manMode&&h('div',{className:'fu',style:{background:CARD,borderRadius:20,padding:16,marginBottom:12,border:'1px solid '+BORDER}},
+          h('div',{style:{fontSize:12,fontWeight:700,marginBottom:12,color:'#f0f0f0'}},'✏️  Manual Entry'),
+          h('input',{type:'text',placeholder:'Food name *',value:manv.name,onChange:function(ev){setMF('name',ev.target.value);},style:{marginBottom:8}}),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:10}},
+            [['Calories *','calories'],['Protein g','protein'],['Carbs g','carbs'],['Fat g','fat'],['Fiber g','fiber'],['Sugar g','sugar'],['Sodium mg','sodium']].map(function(pr){
+              return h('input',{key:pr[1],type:'number',placeholder:pr[0],value:manv[pr[1]],onChange:function(ev){setMF(pr[1],ev.target.value);}});
+            })
+          ),
+          h('div',{style:{display:'flex',gap:8}},
+            h('button',{onClick:function(){setManMode(false);},style:{flex:1,background:'none',border:'1px solid '+BORDER,borderRadius:10,padding:9,color:MUTED2,cursor:'pointer',fontSize:12}},'Cancel'),
+            h('button',{onClick:addManual,style:{flex:2,background:LIME,border:'none',borderRadius:10,padding:9,color:INK,fontWeight:700,cursor:'pointer',fontSize:13}},'Add ✓')
+          )
+        ),
+
+        // Preview
+        preview&&!clarify&&h('div',{className:'fu',style:{background:CARD,borderRadius:20,overflow:'hidden',marginBottom:12,border:'1px solid '+BORDER}},
+          h('img',{src:preview,alt:'',style:{width:'100%',maxHeight:230,objectFit:'cover'}}),
+          h('div',{style:{padding:14}},
+            err&&h('div',{style:{color:RED,fontSize:12,marginBottom:10,padding:'8px 10px',background:'rgba(255,82,82,0.1)',borderRadius:8}},err),
+            h('div',{style:{display:'flex',gap:8}},
+              h('button',{onClick:function(){setPreview(null);setPending(null);setErr(null);},
+                style:{flex:1,background:'none',border:'1px solid '+BORDER,borderRadius:10,padding:9,color:MUTED2,fontSize:12,cursor:'pointer'}},'Cancel'),
+              h('button',{onClick:function(){runAnalysis(pending,'');},disabled:busy,
+                style:{flex:2,background:busy?INK3:LIME,border:'none',borderRadius:10,padding:9,
+                  color:busy?MUTED:INK,fontWeight:700,fontSize:13,cursor:busy?'default':'pointer'}},
+                busy?'Analysing…':!apiKey?'🔑 Set API Key first':'🔍  Analyse Meal')
+            )
+          )
+        ),
+
+        // Clarify
+        clarify&&h('div',{className:'overlay'},
+          h('div',{className:'sheet'},
+            h('div',{style:{fontSize:32,textAlign:'center',marginBottom:8}},'🤔'),
+            h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'#f0f0f0',textAlign:'center',marginBottom:6}},'One quick question'),
+            h('div',{style:{fontSize:13,color:MUTED2,textAlign:'center',marginBottom:18,lineHeight:1.6}},cq),
+            h('input',{type:'text',placeholder:'e.g. grilled chicken salad, large',value:ca,autoFocus:true,
+              onChange:function(ev){setCa(ev.target.value);},
+              onKeyDown:function(ev){if(ev.key==='Enter'&&ca.trim())runAnalysis(pending,ca);},
+              style:{marginBottom:12,border:'1px solid rgba(200,240,74,0.3)'}}),
+            err&&h('div',{style:{color:RED,fontSize:12,marginBottom:10}},err),
+            h('div',{style:{display:'flex',gap:8}},
+              h('button',{onClick:function(){setClarify(false);setPreview(null);setPending(null);},
+                style:{flex:1,background:'none',border:'1px solid '+BORDER,borderRadius:12,padding:11,color:MUTED2,cursor:'pointer',fontSize:12}},'Cancel'),
+              h('button',{onClick:function(){runAnalysis(pending,ca);},disabled:busy||!ca.trim(),
+                style:{flex:2,background:busy?INK3:LIME,border:'none',borderRadius:12,padding:11,color:busy?MUTED:INK,fontWeight:700,fontSize:13,cursor:'pointer'}},
+                busy?'Analysing…':'Submit ✓')
+            )
+          )
+        ),
+
+        // Entries
+        todayE.length>0&&h('div',null,
+          h('div',{style:{fontSize:10,color:MUTED,textTransform:'uppercase',letterSpacing:'0.1em',fontWeight:700,marginBottom:10}},"Today's Meals"),
+          todayE.slice().reverse().map(function(en){return h(EntryCard,{key:en.id,entry:en,onDelete:delEntry});})
+        ),
+        todayE.length===0&&h('div',{style:{textAlign:'center',padding:'28px 20px',color:MUTED}},
+          h('div',{style:{fontSize:44,marginBottom:8}},'🍽️'),
+          h('div',{style:{fontSize:13}},'No meals logged yet today'),
+          h('div',{style:{fontSize:11,marginTop:3}},'Snap a photo or add manually')
+        )
+      ),
+
+      // HISTORY
+      tab==='history'&&h('div',null,
+        allDates.length===0&&h('div',{style:{textAlign:'center',padding:'40px 20px',color:MUTED}},
+          h('div',{style:{fontSize:44,marginBottom:8}},'📅'),h('div',null,'No history yet.')
+        ),
+        allDates.map(function(date){
+          var ents=data.entries.filter(function(en){return en.date===date;});
+          var t=ents.reduce(function(a,en){return{calories:a.calories+(en.calories||0),protein:a.protein+(en.protein||0)};},{calories:0,protein:0});
+          var wE=data.weight?data.weight.filter(function(w){return w.date===date;}).slice(-1)[0]:null;
+          return h('div',{key:date,style:{background:CARD,borderRadius:20,padding:16,marginBottom:12,border:'1px solid '+BORDER}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+              h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'#f0f0f0',fontWeight:700}},
+                date===today?'⚡ Today':new Date(date+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})
+              ),
+              h('div',{style:{display:'flex',gap:9,fontSize:11}},
+                wE&&h('span',{style:{color:MUTED2}},'⚖️ '+wE.value+(wE.unit||wu)),
+                h('span',{style:{color:LIME,fontWeight:700}},fmtN(t.calories)+' kcal'),
+                h('span',{style:{color:'#FF8C42'}},fmtN(t.protein)+'g P')
+              )
+            ),
+            h('div',{style:{height:3,background:'rgba(255,255,255,0.06)',borderRadius:2,marginBottom:10}},
+              h('div',{style:{height:'100%',borderRadius:2,
+                width:Math.min(t.calories/goals.calories*100,100)+'%',
+                background:t.calories>goals.calories?RED:LIME}})
+            ),
+            ents.map(function(en){return h(EntryCard,{key:en.id,entry:en,onDelete:delEntry});})
+          );
+        })
+      ),
+
+      // GOALS
+      tab==='goals'&&h('div',null,
+        h('div',{style:{background:CARD,borderRadius:20,padding:20,marginBottom:12,border:'1px solid '+BORDER}},
+          h('div',{style:{fontSize:10,color:MUTED,textTransform:'uppercase',letterSpacing:'0.1em',fontWeight:700,marginBottom:14}},'🎯 Daily Targets'),
+          gEdit
+            ? h('div',null,
+                [['⚡ Calories','calories'],['🥩 Protein g','protein'],['🌾 Carbs g','carbs'],['🫒 Fat g','fat']].map(function(pr){
+                  return h('div',{key:pr[1],style:{marginBottom:10}},
+                    h('label',{style:{fontSize:10,color:MUTED2,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.06em'}},pr[0]),
+                    h('input',{type:'number',value:gDraft[pr[1]],onChange:function(ev){setGF(pr[1],ev.target.value);},
+                      style:{border:'1px solid rgba(200,240,74,0.2)',fontSize:14}})
+                  );
+                }),
+                h('div',{style:{display:'flex',gap:8,marginTop:6}},
+                  h('button',{onClick:function(){setGEdit(false);},style:{flex:1,background:'none',border:'1px solid '+BORDER,borderRadius:10,padding:9,color:MUTED2,cursor:'pointer',fontSize:12}},'Cancel'),
+                  h('button',{onClick:function(){persist(Object.assign({},data,{goals:{calories:Number(gDraft.calories),protein:Number(gDraft.protein),carbs:Number(gDraft.carbs),fat:Number(gDraft.fat)}}));setGEdit(false);},
+                    style:{flex:2,background:LIME,border:'none',borderRadius:10,padding:9,color:INK,fontWeight:700,cursor:'pointer',fontSize:13}},'Save ✓')
+                )
+              )
+            : h('div',null,
+                h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}},
+                  [['⚡','Calories',goals.calories,'kcal',LIME],['🥩','Protein',goals.protein,'g','#FF8C42'],
+                   ['🌾','Carbs',goals.carbs,'g','#FFD166'],['🫒','Fat',goals.fat,'g','#9B5DE5']].map(function(it){
+                    return h('div',{key:it[1],style:{background:CARD2,borderRadius:14,padding:'14px 12px',border:'1px solid '+BORDER}},
+                      h('div',{style:{fontSize:9,color:MUTED2,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}},it[0]+' '+it[1]),
+                      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:21,fontWeight:700,color:it[4]}},it[2]),
+                      h('div',{style:{fontSize:9,color:MUTED}},it[3]+'/day')
+                    );
+                  })
+                ),
+                h('button',{onClick:function(){setGDraft({calories:goals.calories,protein:goals.protein,carbs:goals.carbs,fat:goals.fat});setGEdit(true);},
+                  style:{width:'100%',background:'none',border:'1px solid '+BORDER,borderRadius:12,padding:11,color:MUTED2,fontSize:12,fontWeight:600,cursor:'pointer'}},
+                  '✏️  Edit Goals')
+              )
+        ),
+        h('div',{style:{background:CARD,borderRadius:20,padding:20,border:'1px solid '+BORDER}},
+          h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}},
+            h('div',{style:{fontSize:10,color:MUTED,textTransform:'uppercase',letterSpacing:'0.1em',fontWeight:700}},'⚖️ Weight Log'),
+            h(Pill,{val:wu,onChange:function(v){persist(Object.assign({},data,{wu:v}));},opts:['lbs','kg']})
+          ),
+          (data.weight||[]).slice().reverse().slice(0,10).map(function(w,i){
+            return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid '+BORDER,fontSize:12}},
+              h('span',{style:{color:MUTED2}},new Date(w.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})),
+              h('span',{style:{fontWeight:700,color:'#f0f0f0'}},w.value+' '+h('span',{style:{color:MUTED2,fontWeight:400}},w.unit||wu))
+            );
+          }),
+          (!data.weight||!data.weight.length)&&h('div',{style:{color:MUTED,fontSize:12,textAlign:'center',padding:'16px 0'}},'No weight entries yet')
+        )
+      )
+    )
+  );
+}
+
+try {
+  ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+} catch(ex) {
+  document.getElementById('root').innerHTML = '<div style="color:red;padding:20px;font-family:monospace">Error: ' + ex.message + '</div>';
+}
+</script>
+</body>
+</html>
